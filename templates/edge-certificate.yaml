@@ -1,0 +1,25 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: edge-app-certificate
+  namespace: {{ .Values.namespace }}
+spec:
+  secretName: {{ .Values.edgeCertificate.secretName }}
+  duration: 2160h
+  renewBefore: 360h
+  commonName: "{{ .Values.edgeCertificate.commonName }}"
+  isCA: false
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+    - client auth
+  dnsNames:
+{{ toYaml .Values.edgeCertificate.dnsNames | indent 4 }}
+  issuerRef:
+    name: internal-root-ca-issuer
+    kind: Issuer
+    group: cert-manager.io
