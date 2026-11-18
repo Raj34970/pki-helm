@@ -11,11 +11,12 @@ spec:
   source:
     repoURL: https://github.com/Raj34970/pki-helm.git
     targetRevision: main
-    path: lxhome/pki
+    chart: lxhome-pki 
+    path: .
   syncPolicy:
     automated:
       prune: false
       selfHeal: true
       enabled: true
     syncOptions:
-      - CreateNamespace=true’
+      - CreateNamespace=true
