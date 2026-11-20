@@ -21,3 +21,7 @@ cat ca.key | base64 | tr -d '\n'
 # Then run the HELM
 helm install lxhome-pki ./pki
 ```
+
+```shell
+helm push lxhome-pki-*.tgz oci://harbor.lxhome.fr/lxhome
+```
