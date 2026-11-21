@@ -1,46 +1,43 @@
 pipeline {
-  agent any
+  agent { label 'control-plane' }
+
+  triggers {
+    pollSCM('H/5 * * * *')
+  }
 
   environment {
-    CHART_DIR       = 'lxhome/pki'
+    GIT_REPO_URL    = 'git@github.com:Raj34970/pki-helm.git'
+    GIT_BRANCH      = 'main'
+    CHART_SUBDIR    = ''
     HARBOR_REGISTRY = 'harbor.lxhome.fr'
     HARBOR_PROJECT  = 'lxhome'
     HARBOR_CREDS_ID = 'harbor-creds'
+    GITHUB_TOKEN_ID = 'github-token'
     INSECURE_TLS    = 'false'
+    SRC_DIR         = "${WORKSPACE}/repo-src"
   }
 
   stages {
+    stage('Git Pull to Temp Directory') {
+      steps {
+        sh '''
+          set -euo pipefail
+          rm -rf "${SRC_DIR}"
+          git clone --depth 1 --branch "${GIT_BRANCH}" "${GIT_REPO_URL}" "${SRC_DIR}"
+          git -C "${SRC_DIR}" pull --ff-only origin "${GIT_BRANCH}"
+          ls -la "${SRC_DIR}"
+        '''
+      }
+    }
+
     stage('Detect Previous Release & Compute Next Version') {
       steps {
         withCredentials([usernamePassword(credentialsId: "${HARBOR_CREDS_ID}", usernameVariable: 'HARBOR_USER', passwordVariable: 'HARBOR_PASS')]) {
           script {
+            def chartDir = env.CHART_SUBDIR?.trim() ? "${env.SRC_DIR}/${env.CHART_SUBDIR.trim()}" : "${env.SRC_DIR}"
+
             def releaseInfo = sh(
-              script: '''
-                set -euo pipefail
-                CHART_NAME=$(awk '/^name:/ {print $2; exit}' "${CHART_DIR}/Chart.yaml")
-                BASE_VERSION=$(awk '/^version:/ {print $2; exit}' "${CHART_DIR}/Chart.yaml")
-
-                CURL_OPTS="-fsS -u ${HARBOR_USER}:${HARBOR_PASS}"
-                if [ "${INSECURE_TLS}" = "true" ]; then
-                  CURL_OPTS="${CURL_OPTS} -k"
-                fi
-
-                API_URL="https://${HARBOR_REGISTRY}/api/v2.0/projects/${HARBOR_PROJECT}/repositories/${CHART_NAME}/artifacts?page_size=100"
-                LATEST_TAG=$(curl ${CURL_OPTS} "${API_URL}" 2>/dev/null \
-                  | grep -oE '"name":"[0-9]+\.[0-9]+\.[0-9]+"' \
-                  | sed -E 's/"name":"([^"]+)"/\\1/' \
-                  | sort -V \
-                  | tail -n 1 || true)
-
-                PREV_VER="${LATEST_TAG:-$BASE_VERSION}"
-                IFS='.' read -r MAJOR MINOR PATCH <<< "${PREV_VER}"
-                NEXT_PATCH=$((PATCH + 1))
-                NEXT_VER="${MAJOR}.${MINOR}.${NEXT_PATCH}"
-
-                echo "CHART_NAME=${CHART_NAME}"
-                echo "PREV_VER=${PREV_VER}"
-                echo "NEXT_VER=${NEXT_VER}"
-              ''',
+              script: "CHART_DIR='${chartDir}' /home/jenkins/scripts/detect_version.sh",
               returnStdout: true
             ).trim()
 
@@ -64,37 +61,25 @@ pipeline {
 
     stage('Lint, Build Dependencies & Package Chart') {
       steps {
-        sh '''
-          set -euo pipefail
-          rm -rf "${WORKSPACE}/chart-pkg"
-          mkdir -p "${WORKSPACE}/chart-pkg"
-
-          helm lint "${CHART_DIR}"
-          helm dependency build "${CHART_DIR}"
-          helm package "${CHART_DIR}" --version "${NEXT_VER}" --destination "${WORKSPACE}/chart-pkg"
-          ls -lh "${WORKSPACE}/chart-pkg/${CHART_NAME}-${NEXT_VER}.tgz"
-        '''
+        script {
+          def chartDir = env.CHART_SUBDIR?.trim() ? "${env.SRC_DIR}/${env.CHART_SUBDIR.trim()}" : "${env.SRC_DIR}"
+          sh "CHART_DIR='${chartDir}' /home/jenkins/scripts/package_chart.sh"
+        }
       }
     }
 
     stage('Push Chart to Harbor OCI') {
       steps {
         withCredentials([usernamePassword(credentialsId: "${HARBOR_CREDS_ID}", usernameVariable: 'HARBOR_USER', passwordVariable: 'HARBOR_PASS')]) {
-          sh '''
-            set -euo pipefail
-            LOGIN_OPTS=""
-            if [ "${INSECURE_TLS}" = "true" ]; then
-              LOGIN_OPTS="--insecure"
-            fi
+          sh '/home/jenkins/scripts/push_harbor.sh'
+        }
+      }
+    }
 
-            echo "${HARBOR_PASS}" | helm registry login "${HARBOR_REGISTRY}" \
-              -u "${HARBOR_USER}" \
-              --password-stdin \
-              ${LOGIN_OPTS}
-
-            helm push "${WORKSPACE}/chart-pkg/${CHART_NAME}-${NEXT_VER}.tgz" \
-              "oci://${HARBOR_REGISTRY}/${HARBOR_PROJECT}"
-          '''
+    stage('Create GitHub Release') {
+      steps {
+        withCredentials([string(credentialsId: "${GITHUB_TOKEN_ID}", variable: 'GH_TOKEN')]) {
+          sh "cd '${SRC_DIR}' && /home/jenkins/scripts/create_gh_release.sh"
         }
       }
     }
@@ -102,7 +87,7 @@ pipeline {
 
   post {
     always {
-      sh "rm -rf '${WORKSPACE}/chart-pkg' || true"
+      sh "rm -rf '${SRC_DIR}' '${WORKSPACE}/chart-pkg' || true"
     }
   }
 }
