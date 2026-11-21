@@ -2,7 +2,7 @@ pipeline {
   agent { label 'control-plane' }
 
   triggers {
-    pollSCM('H/5 * * * *')
+    githubPush()
   }
 
   environment {
